@@ -85,7 +85,9 @@ impl ApplicationObserver {
       })?)
     };
 
-    let app_windows = Arc::new(Mutex::new(app.windows()?));
+    // Initialize with an empty list first; will be populated after
+    // registering for notifications.
+    let app_windows = Arc::new(Mutex::new(Vec::new()));
     let context = Box::into_raw(Box::new(ApplicationEventContext {
       application: app.clone(),
       events_tx: events_tx.clone(),
@@ -101,34 +103,56 @@ impl ApplicationObserver {
       kCFRunLoopDefaultMode
     });
 
-    // Register for all window notifications.
-    // TODO: Remove from runloop if registration fails.
+    // Register for app-level notifications (including `AXWindowCreated`)
+    // before fetching existing windows. This ensures that any window
+    // created after fetching will still be detected via `AXWindowCreated`.
     Self::register_app_notifications(app, &observer, context)?;
 
-    // Emit `WindowEvent::Shown` for all existing windows.
-    for window in app_windows.lock().unwrap().iter() {
-      if let Err(err) =
-        Self::register_window_notifications(window, &observer, context)
-      {
-        tracing::warn!(
-          "Failed to register window notifications for PID {}: {}",
-          app.pid,
-          err
-        );
-      }
+    // Fetch existing windows after registering for notifications.
+    let existing_windows = app.windows()?;
 
-      // Don't emit `WindowEvent::Shown` for windows that are already
-      // running on startup.
-      if !is_startup {
-        if let Err(err) = events_tx.send(WindowEvent::Shown {
-          window: window.clone(),
-          notification: crate::WindowEventNotification(None),
-        }) {
+    // Add existing windows to tracking and emit events. Hold the lock for
+    // the entire operation to prevent race conditions with the callback.
+    {
+      let mut app_windows_guard = app_windows.lock().unwrap();
+
+      for window in existing_windows {
+        // Skip if callback already added this window during the race
+        // window between registering notifications and fetching windows.
+        let already_tracked = app_windows_guard.iter().any(|w| {
+          w.ax_ui_element().get_ref().ok()
+            == window.ax_ui_element().get_ref().ok()
+        });
+
+        if already_tracked {
+          continue;
+        }
+
+        if let Err(err) =
+          Self::register_window_notifications(&window, &observer, context)
+        {
           tracing::warn!(
-            "Failed to send window event for PID {}: {}",
+            "Failed to register window notifications for PID {}: {}",
             app.pid,
             err
           );
+        }
+
+        app_windows_guard.push(window.clone());
+
+        // Don't emit `WindowEvent::Shown` for windows that are already
+        // running on startup.
+        if !is_startup {
+          if let Err(err) = events_tx.send(WindowEvent::Shown {
+            window,
+            notification: crate::WindowEventNotification(None),
+          }) {
+            tracing::warn!(
+              "Failed to send window event for PID {}: {}",
+              app.pid,
+              err
+            );
+          }
         }
       }
     }

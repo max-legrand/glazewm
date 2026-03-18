@@ -51,7 +51,7 @@ impl FromStr for LengthValue {
   type Err = crate::ParseError;
 
   /// Parses a string containing a number followed by a unit (`px`, `%`).
-  /// Allows for negative numbers.
+  /// Allows for negative and fractional numbers (e.g., `2.5%`).
   ///
   /// Example:
   /// ```
@@ -66,7 +66,7 @@ impl FromStr for LengthValue {
   /// ```
   fn from_str(unparsed: &str) -> Result<Self, crate::ParseError> {
     let units_regex =
-      Regex::new(r"([+-]?\d+)(%|px)?").expect("Invalid regex.");
+      Regex::new(r"([+-]?\d+\.?\d*)(%|px)?").expect("Invalid regex.");
 
     let captures = units_regex
       .captures(unparsed)
