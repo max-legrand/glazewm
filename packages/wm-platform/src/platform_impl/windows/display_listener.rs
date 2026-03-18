@@ -44,7 +44,9 @@ impl DisplayListener {
               _ => {}
             }
 
-            Some(0)
+            // Don't consume the message so other callbacks (e.g.
+            // session listener) can also process it.
+            None
           }
           WM_DISPLAYCHANGE | WM_SETTINGCHANGE | WM_DEVICECHANGE => {
             let should_emit = {

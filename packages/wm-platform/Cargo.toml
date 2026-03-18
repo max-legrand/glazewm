@@ -74,6 +74,7 @@ objc2-core-foundation = { version = "0.3.2", features = [
 ] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
   "NSArray",
+  "NSDistributedNotificationCenter",
   "NSEnumerator",
   "NSNotification",
   "NSKeyValueCoding",

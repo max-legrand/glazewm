@@ -5,7 +5,8 @@ use wm_platform::NativeWindow;
 
 use crate::{
   commands::{
-    container::set_focused_descendant, window::run_window_rules,
+    container::set_focused_descendant,
+    window::{manage_window, run_window_rules},
     workspace::focus_workspace,
   },
   models::WorkspaceTarget,
@@ -99,6 +100,14 @@ pub fn handle_window_focused(
     state.emit_event(WmEvent::FocusChanged {
       focused_container: window.to_dto()?,
     });
+  } else if !native_window.is_desktop_window().unwrap_or(false) {
+    // Focus event fired for a window not tracked by the WM. On macOS, the
+    // initial `manage_window` call from `WindowEvent::Shown` can fail
+    // silently if AX queries (role/subrole/title) return `cannot_complete`
+    // while the window is still initializing. Retry management here so the
+    // window gets picked up on the next AX event.
+    info!("Attempting to manage previously-unmanaged focused window.");
+    manage_window(native_window.clone(), None, state, config)?;
   }
 
   Ok(())

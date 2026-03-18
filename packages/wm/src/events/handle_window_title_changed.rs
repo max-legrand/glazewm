@@ -3,8 +3,10 @@ use wm_common::{try_warn, WindowRuleEvent};
 use wm_platform::NativeWindow;
 
 use crate::{
-  commands::window::run_window_rules, traits::WindowGetters,
-  user_config::UserConfig, wm_state::WmState,
+  commands::window::{manage_window, run_window_rules},
+  traits::WindowGetters,
+  user_config::UserConfig,
+  wm_state::WmState,
 };
 
 pub fn handle_window_title_changed(
@@ -30,6 +32,13 @@ pub fn handle_window_title_changed(
       state,
       config,
     )?;
+  } else {
+    // Title-change event for a window not tracked by the WM. On macOS, the
+    // initial `manage_window` call from `WindowEvent::Shown` can fail
+    // silently if AX queries return `cannot_complete` while the window is
+    // still initializing. Retry management here.
+    info!("Attempting to manage previously-unmanaged window on title change.");
+    manage_window(native_window.clone(), None, state, config)?;
   }
 
   Ok(())

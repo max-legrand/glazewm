@@ -11,11 +11,15 @@ use objc2_app_kit::{
   NSWorkspaceDidLaunchApplicationNotification,
   NSWorkspaceDidTerminateApplicationNotification,
   NSWorkspaceDidUnhideApplicationNotification,
-  NSWorkspaceDidWakeNotification, NSWorkspaceWillSleepNotification,
+  NSWorkspaceDidWakeNotification, NSWorkspaceScreensDidSleepNotification,
+  NSWorkspaceScreensDidWakeNotification,
+  NSWorkspaceSessionDidBecomeActiveNotification,
+  NSWorkspaceSessionDidResignActiveNotification,
+  NSWorkspaceWillSleepNotification,
 };
 use objc2_foundation::{
-  ns_string, NSNotification, NSNotificationCenter, NSNotificationName,
-  NSObject, NSString,
+  ns_string, NSDistributedNotificationCenter, NSNotification,
+  NSNotificationCenter, NSNotificationName, NSObject, NSString,
 };
 use tokio::sync::mpsc;
 
@@ -28,9 +32,19 @@ pub(crate) enum NotificationName {
   WorkspaceDidTerminateApplication,
   WorkspaceDidHideApplication,
   WorkspaceDidUnhideApplication,
-  WorkspaceDidWake,
-  WorkspaceWillSleep,
   ApplicationDidChangeScreenParameters,
+  WorkspaceWillSleep,
+  WorkspaceDidWake,
+  WorkspaceScreensDidSleep,
+  WorkspaceScreensDidWake,
+  WorkspaceSessionDidBecomeActive,
+  WorkspaceSessionDidResignActive,
+  /// `com.apple.screenIsLocked` — distributed notification for screen
+  /// lock.
+  ScreenIsLocked,
+  /// `com.apple.screenIsUnlocked` — distributed notification for screen
+  /// unlock.
+  ScreenIsUnlocked,
 }
 
 impl From<&NSNotificationName> for NotificationName {
@@ -56,14 +70,30 @@ impl From<&NSNotificationName> for NotificationName {
       == unsafe { NSWorkspaceDidUnhideApplicationNotification }
     {
       Self::WorkspaceDidUnhideApplication
-    } else if name == unsafe { NSWorkspaceDidWakeNotification } {
-      Self::WorkspaceDidWake
-    } else if name == unsafe { NSWorkspaceWillSleepNotification } {
-      Self::WorkspaceWillSleep
     } else if name
       == unsafe { NSApplicationDidChangeScreenParametersNotification }
     {
       Self::ApplicationDidChangeScreenParameters
+    } else if name == unsafe { NSWorkspaceWillSleepNotification } {
+      Self::WorkspaceWillSleep
+    } else if name == unsafe { NSWorkspaceDidWakeNotification } {
+      Self::WorkspaceDidWake
+    } else if name == unsafe { NSWorkspaceScreensDidSleepNotification } {
+      Self::WorkspaceScreensDidSleep
+    } else if name == unsafe { NSWorkspaceScreensDidWakeNotification } {
+      Self::WorkspaceScreensDidWake
+    } else if name
+      == unsafe { NSWorkspaceSessionDidBecomeActiveNotification }
+    {
+      Self::WorkspaceSessionDidBecomeActive
+    } else if name
+      == unsafe { NSWorkspaceSessionDidResignActiveNotification }
+    {
+      Self::WorkspaceSessionDidResignActive
+    } else if name == ns_string!("com.apple.screenIsLocked") {
+      Self::ScreenIsLocked
+    } else if name == ns_string!("com.apple.screenIsUnlocked") {
+      Self::ScreenIsUnlocked
     } else {
       panic!("Unknown notification name: {name}");
     }
@@ -91,15 +121,33 @@ impl From<NotificationName> for &NSString {
       NotificationName::WorkspaceDidUnhideApplication => unsafe {
         NSWorkspaceDidUnhideApplicationNotification
       },
-      NotificationName::WorkspaceDidWake => unsafe {
-        NSWorkspaceDidWakeNotification
+      NotificationName::ApplicationDidChangeScreenParameters => unsafe {
+        NSApplicationDidChangeScreenParametersNotification
       },
       NotificationName::WorkspaceWillSleep => unsafe {
         NSWorkspaceWillSleepNotification
       },
-      NotificationName::ApplicationDidChangeScreenParameters => unsafe {
-        NSApplicationDidChangeScreenParametersNotification
+      NotificationName::WorkspaceDidWake => unsafe {
+        NSWorkspaceDidWakeNotification
       },
+      NotificationName::WorkspaceScreensDidSleep => unsafe {
+        NSWorkspaceScreensDidSleepNotification
+      },
+      NotificationName::WorkspaceScreensDidWake => unsafe {
+        NSWorkspaceScreensDidWakeNotification
+      },
+      NotificationName::WorkspaceSessionDidBecomeActive => unsafe {
+        NSWorkspaceSessionDidBecomeActiveNotification
+      },
+      NotificationName::WorkspaceSessionDidResignActive => unsafe {
+        NSWorkspaceSessionDidResignActiveNotification
+      },
+      NotificationName::ScreenIsLocked => {
+        ns_string!("com.apple.screenIsLocked")
+      }
+      NotificationName::ScreenIsUnlocked => {
+        ns_string!("com.apple.screenIsUnlocked")
+      }
     }
   }
 }
@@ -113,9 +161,15 @@ pub(crate) enum NotificationEvent {
   WorkspaceDidTerminateApplication(Retained<NSRunningApplication>),
   WorkspaceDidHideApplication(Retained<NSRunningApplication>),
   WorkspaceDidUnhideApplication(Retained<NSRunningApplication>),
+  ApplicationDidChangeScreenParameters,
   WorkspaceWillSleep,
   WorkspaceDidWake,
-  ApplicationDidChangeScreenParameters,
+  WorkspaceScreensDidSleep,
+  WorkspaceScreensDidWake,
+  WorkspaceSessionDidBecomeActive,
+  WorkspaceSessionDidResignActive,
+  ScreenIsLocked,
+  ScreenIsUnlocked,
 }
 
 /// Instance variables for `NotificationObserver`.
@@ -207,16 +261,36 @@ impl NotificationObserver {
           );
         }
       }
-      NotificationName::WorkspaceDidWake => {
-        self.emit_event(NotificationEvent::WorkspaceDidWake);
-      }
-      NotificationName::WorkspaceWillSleep => {
-        self.emit_event(NotificationEvent::WorkspaceWillSleep);
-      }
       NotificationName::ApplicationDidChangeScreenParameters => {
         self.emit_event(
           NotificationEvent::ApplicationDidChangeScreenParameters,
         );
+      }
+      NotificationName::WorkspaceWillSleep => {
+        self.emit_event(NotificationEvent::WorkspaceWillSleep);
+      }
+      NotificationName::WorkspaceDidWake => {
+        self.emit_event(NotificationEvent::WorkspaceDidWake);
+      }
+      NotificationName::WorkspaceScreensDidSleep => {
+        self.emit_event(NotificationEvent::WorkspaceScreensDidSleep);
+      }
+      NotificationName::WorkspaceScreensDidWake => {
+        self.emit_event(NotificationEvent::WorkspaceScreensDidWake);
+      }
+      NotificationName::WorkspaceSessionDidBecomeActive => {
+        self
+          .emit_event(NotificationEvent::WorkspaceSessionDidBecomeActive);
+      }
+      NotificationName::WorkspaceSessionDidResignActive => {
+        self
+          .emit_event(NotificationEvent::WorkspaceSessionDidResignActive);
+      }
+      NotificationName::ScreenIsLocked => {
+        self.emit_event(NotificationEvent::ScreenIsLocked);
+      }
+      NotificationName::ScreenIsUnlocked => {
+        self.emit_event(NotificationEvent::ScreenIsUnlocked);
       }
     }
   }
@@ -243,6 +317,20 @@ impl NotificationCenter {
 
   pub fn default_center() -> Self {
     let center = NSNotificationCenter::defaultCenter();
+
+    Self { inner: center }
+  }
+
+  /// Returns the default distributed notification center, which
+  /// receives system-wide notifications like `com.apple.screenIsLocked`
+  /// and `com.apple.screenIsUnlocked`.
+  pub fn distributed_center() -> Self {
+    let center = NSDistributedNotificationCenter::defaultCenter();
+
+    // `NSDistributedNotificationCenter` inherits from
+    // `NSNotificationCenter`, so this cast is safe.
+    let center: Retained<NSNotificationCenter> =
+      unsafe { Retained::cast_unchecked(center) };
 
     Self { inner: center }
   }

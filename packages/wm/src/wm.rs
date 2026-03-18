@@ -37,10 +37,10 @@ use crate::{
   },
   events::{
     handle_display_settings_changed, handle_mouse_move,
-    handle_window_destroyed, handle_window_focused, handle_window_hidden,
-    handle_window_minimize_ended, handle_window_minimized,
-    handle_window_moved_or_resized, handle_window_shown,
-    handle_window_title_changed,
+    handle_session_change, handle_window_destroyed, handle_window_focused,
+    handle_window_hidden, handle_window_minimize_ended,
+    handle_window_minimized, handle_window_moved_or_resized,
+    handle_window_shown, handle_window_title_changed,
   },
   ipc_server::IpcServer,
   models::{Container, WorkspaceTarget},
@@ -84,6 +84,9 @@ impl WindowManager {
       PlatformEvent::DisplaySettingsChanged => {
         handle_display_settings_changed(state, config)
       }
+      PlatformEvent::SessionChange(session_event) => {
+        handle_session_change(&session_event, state, config)
+      }
       PlatformEvent::Keybinding(keybinding_event) => {
         // Find the keybinding config that matches this keybinding.
         let commands = config
@@ -106,41 +109,54 @@ impl WindowManager {
       PlatformEvent::Mouse(event) => {
         handle_mouse_move(&event, state, config)
       }
-      PlatformEvent::Window(window_event) => match window_event {
-        WindowEvent::Focused { window, .. } => {
-          handle_window_focused(&window, state, config)
+      PlatformEvent::Window(window_event) => {
+        // Skip window events while paused (e.g. during session lock).
+        // The OS may fire hide/cloak/destroy events for windows during
+        // the lock transition which would incorrectly unmanage them.
+        if state.is_paused {
+          tracing::debug!(
+            "Skipping window event while paused: {:?}",
+            window_event,
+          );
+          return Ok(());
         }
-        WindowEvent::Shown { window, .. } => {
-          handle_window_shown(window, state, config)
+
+        match window_event {
+          WindowEvent::Focused { window, .. } => {
+            handle_window_focused(&window, state, config)
+          }
+          WindowEvent::Shown { window, .. } => {
+            handle_window_shown(window, state, config)
+          }
+          WindowEvent::Hidden { window, .. } => {
+            handle_window_hidden(&window, state, config)
+          }
+          WindowEvent::MovedOrResized {
+            window,
+            is_interactive_start,
+            is_interactive_end,
+            ..
+          } => handle_window_moved_or_resized(
+            &window,
+            is_interactive_start,
+            is_interactive_end,
+            state,
+            config,
+          ),
+          WindowEvent::Minimized { window, .. } => {
+            handle_window_minimized(&window, state, config)
+          }
+          WindowEvent::MinimizeEnded { window, .. } => {
+            handle_window_minimize_ended(&window, state, config)
+          }
+          WindowEvent::TitleChanged { window, .. } => {
+            handle_window_title_changed(&window, state, config)
+          }
+          WindowEvent::Destroyed { window_id, .. } => {
+            handle_window_destroyed(window_id, state)
+          }
         }
-        WindowEvent::Hidden { window, .. } => {
-          handle_window_hidden(&window, state, config)
-        }
-        WindowEvent::MovedOrResized {
-          window,
-          is_interactive_start,
-          is_interactive_end,
-          ..
-        } => handle_window_moved_or_resized(
-          &window,
-          is_interactive_start,
-          is_interactive_end,
-          state,
-          config,
-        ),
-        WindowEvent::Minimized { window, .. } => {
-          handle_window_minimized(&window, state, config)
-        }
-        WindowEvent::MinimizeEnded { window, .. } => {
-          handle_window_minimize_ended(&window, state, config)
-        }
-        WindowEvent::TitleChanged { window, .. } => {
-          handle_window_title_changed(&window, state, config)
-        }
-        WindowEvent::Destroyed { window_id, .. } => {
-          handle_window_destroyed(window_id, state)
-        }
-      },
+      }
     }?;
 
     if !state.is_paused && state.pending_sync.has_changes() {
