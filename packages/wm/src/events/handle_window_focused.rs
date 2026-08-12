@@ -23,6 +23,7 @@ pub fn handle_window_focused(
   let found_window = state.window_from_native(native_window);
   let focused_container =
     state.focused_container().context("No focused container.")?;
+  let was_focus_synced = state.is_focus_synced;
 
   // Update the focus sync state. If the OS focused window is not same as
   // the WM's focused container, then the focus is not synced.
@@ -68,6 +69,20 @@ pub fn handle_window_focused(
     }
 
     info!("Window manually focused: {window}");
+
+    // Ignore stale focus events from the workspace that was previously
+    // focused while a WM-initiated focus change is still synchronizing.
+    // Processing one as a manual focus can switch back to the old workspace
+    // and produce sequences such as 1, 2, 1, 2.
+    if !was_focus_synced
+      && focused_container
+        .workspace()
+        .is_some_and(|focused_workspace| {
+          focused_workspace.id() != workspace.id()
+        })
+    {
+      return Ok(());
+    }
 
     // Handle focus events from windows on hidden workspaces. For example,
     // if Discord is forcefully shown by the OS when it's on a hidden

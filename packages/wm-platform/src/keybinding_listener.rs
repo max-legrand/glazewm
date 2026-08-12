@@ -1,5 +1,5 @@
 use std::{
-  collections::HashMap,
+  collections::{HashMap, HashSet},
   sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -98,10 +98,12 @@ impl KeybindingListener {
       Arc::new(Mutex::new(Self::create_keybinding_map(keybindings)));
 
     let enabled = Arc::new(AtomicBool::new(true));
+    let pressed_keys = Arc::new(Mutex::new(HashSet::new()));
 
     let keyboard_hook = Self::create_keyboard_hook(
       keybinding_map.clone(),
       enabled.clone(),
+      pressed_keys,
       event_tx,
       dispatcher,
     )?;
@@ -145,14 +147,29 @@ impl KeybindingListener {
   fn create_keyboard_hook(
     keybinding_map: Arc<Mutex<HashMap<Key, Vec<Keybinding>>>>,
     enabled: Arc<AtomicBool>,
+    pressed_keys: Arc<Mutex<HashSet<Key>>>,
     event_tx: mpsc::UnboundedSender<KeybindingEvent>,
     dispatcher: &Dispatcher,
   ) -> crate::Result<platform_impl::KeyboardHook> {
     platform_impl::KeyboardHook::new(
       move |event: platform_impl::KeyEvent| -> bool {
-        if !enabled.load(Ordering::Relaxed) || !event.is_keypress {
+        if !enabled.load(Ordering::Relaxed) {
           return false;
         }
+
+        let is_repeat = {
+          let Ok(mut pressed_keys) = pressed_keys.lock() else {
+            tracing::error!("Failed to acquire pressed-key state.");
+            return false;
+          };
+
+          if event.is_keypress {
+            !pressed_keys.insert(event.key)
+          } else {
+            pressed_keys.remove(&event.key);
+            return false;
+          }
+        };
 
         let Ok(keybinding_map) = keybinding_map.lock() else {
           tracing::error!("Failed to acquire lock on keybinding map.");
@@ -207,6 +224,12 @@ impl KeybindingListener {
 
         if has_extra_modifiers {
           return false;
+        }
+
+        // macOS emits repeated key-down events when the trigger key is held.
+        // Do not execute a keybinding more than once per physical press.
+        if is_repeat {
+          return true;
         }
 
         let _ = event_tx.send(KeybindingEvent(longest_keybinding.clone()));

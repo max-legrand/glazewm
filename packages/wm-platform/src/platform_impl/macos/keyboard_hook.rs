@@ -1,4 +1,8 @@
-use std::{os::raw::c_void, ptr::NonNull};
+use std::{
+  os::raw::c_void,
+  ptr::NonNull,
+  sync::atomic::{AtomicPtr, Ordering},
+};
 
 use objc2_core_foundation::{
   kCFRunLoopCommonModes, CFMachPort, CFRetained, CFRunLoop,
@@ -62,6 +66,13 @@ impl KeyEvent {
 /// Data shared with the `CGEventTap` callback.
 struct CallbackData {
   callback: Box<dyn Fn(KeyEvent) -> bool + Send + Sync + 'static>,
+
+  /// Pointer to the underlying `CFMachPort` of the event tap.
+  ///
+  /// Set after the tap is created so the callback can re-enable the
+  /// tap when macOS disables it (e.g. on sleep/wake or callback
+  /// timeouts). Null until the tap has been created.
+  tap_port: AtomicPtr<CFMachPort>,
 }
 
 /// A system-wide low-level keyboard hook.
@@ -89,6 +100,7 @@ impl KeyboardHook {
     let callback_ptr = {
       let data = Box::new(CallbackData {
         callback: Box::new(callback),
+        tap_port: AtomicPtr::new(std::ptr::null_mut()),
       });
       Box::into_raw(data) as usize
     };
@@ -166,6 +178,18 @@ impl KeyboardHook {
 
     CGEvent::tap_enable(&tap_port, true);
 
+    // Record the tap's mach port in the callback data so the callback
+    // can re-enable the tap if macOS disables it (e.g. on sleep/wake).
+    // SAFETY: `callback_ptr` was created from `Box::into_raw` on a
+    // `CallbackData` that outlives the tap (the box is freed in
+    // `terminate`, after the tap is invalidated).
+    let raw_port = CFRetained::as_ptr(&tap_port).as_ptr();
+    unsafe {
+      (*(callback_ptr as *const CallbackData))
+        .tap_port
+        .store(raw_port, Ordering::Release);
+    }
+
     Ok(ThreadBound::new(tap_port, dispatcher.clone()))
   }
 
@@ -180,6 +204,31 @@ impl KeyboardHook {
   ) -> *mut CGEvent {
     if user_info.is_null() {
       tracing::error!("Null pointer passed to keyboard event callback.");
+      return unsafe { event.as_mut() };
+    }
+
+    let data = unsafe { &*(user_info as *const CallbackData) };
+
+    // macOS disables the event tap when its callback exceeds the
+    // system timeout (common after sleep/wake) or on certain user
+    // input violations. Re-enable the tap so keybindings continue to
+    // work; otherwise no further key events will be delivered.
+    if event_type == CGEventType::TapDisabledByTimeout
+      || event_type == CGEventType::TapDisabledByUserInput
+    {
+      let port_ptr = data.tap_port.load(Ordering::Acquire);
+      if !port_ptr.is_null() {
+        tracing::warn!(
+          "Keyboard event tap disabled (event type {:?}), re-enabling.",
+          event_type,
+        );
+
+        // SAFETY: `port_ptr` is owned by the `KeyboardHook` that
+        // installed this callback, and the tap is invalidated before
+        // the callback data is freed in `terminate`.
+        let port_ref = unsafe { &*port_ptr };
+        CGEvent::tap_enable(port_ref, true);
+      }
       return unsafe { event.as_mut() };
     }
 
@@ -204,8 +253,6 @@ impl KeyboardHook {
       event_flags,
     };
 
-    // Get callback from user data and invoke it.
-    let data = unsafe { &*(user_info as *const CallbackData) };
     let should_intercept = (data.callback)(key_event);
 
     if should_intercept {

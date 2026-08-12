@@ -63,25 +63,27 @@ pub fn focus_workspace(
       .unwrap_or_else(|| target_workspace.clone().into());
 
     set_focused_descendant(&container_to_focus, None);
+    // Native focus events can arrive asynchronously. Mark focus as unsynced
+    // before requesting the native focus change so stale events from the
+    // previously focused workspace are ignored.
+    state.is_focus_synced = false;
     state.pending_sync.queue_focus_change();
 
     // Display the workspace to switch focus to.
     state
       .pending_sync
-      .queue_container_to_redraw(displayed_workspace)
-      .queue_container_to_redraw(target_workspace);
+      .queue_container_to_redraw(displayed_workspace.clone())
+      .queue_container_to_redraw(target_workspace.clone());
 
-    // Get empty workspace to destroy (if one is found). Cannot destroy
-    // empty workspaces if they're the only workspace on the monitor.
-    let workspace_to_destroy =
-      state.workspaces().into_iter().find(|workspace| {
-        !workspace.config().keep_alive
-          && !workspace.has_children()
-          && !workspace.is_displayed()
-      });
-
-    if let Some(workspace) = workspace_to_destroy {
-      deactivate_workspace(workspace, state)?;
+    // Remove only the workspace that was displayed on the target monitor
+    // before the switch. Selecting an arbitrary empty workspace can remove
+    // the next workspace in config order, causing `--next` to jump
+    // backward when that workspace is activated again.
+    if displayed_workspace.id() != target_workspace.id()
+      && !displayed_workspace.config().keep_alive
+      && !displayed_workspace.has_children()
+    {
+      deactivate_workspace(displayed_workspace, state)?;
     }
 
     // Save the currently focused workspace as recent.
